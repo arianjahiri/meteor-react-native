@@ -178,13 +178,71 @@ export class Collection {
     return result;
   }
 
+  async getById(id, caller) {
+    const result = await this._collection.getByIdSQL(id, caller);
+    return result;
+  }
+
+  async getByParentId(parentID, optLimit, caller) {
+    const result = await this._collection.getByParentIdSQL(
+      parentID,
+      optLimit,
+      caller,
+    );
+    return result;
+  }
+
+  async delByParentID(parentResourceID, date, store) {
+    const result = await this._collection.delByParentID(
+      parentResourceID,
+      date,
+      store,
+    );
+    return result;
+  }
+
+  async query(query, projection, bbox, caller) {
+    const result = await this._collection.querySQL(
+      query,
+      projection,
+      bbox,
+      caller,
+    );
+    return result;
+  }
+
+  async checkMicroAppTables() {
+    const result = await this._collection.checkTableColumns();
+    return result;
+  }
+
+  async queryWithMapBoundaries(query, projection, mapBoundaries) {
+    const result = await this._collection.querySQL(query, projection, [
+      mapBoundaries.southWest.longitude,
+      mapBoundaries.northEast.longitude,
+      mapBoundaries.southWest.latitude,
+      mapBoundaries.northEast.latitude,
+    ]);
+    return result;
+  }
+
+  async countByParentId(parentID) {
+    const result = await this._collection.countByParentIdSQL(parentID);
+    return result;
+  }
+
+  async countAll() {
+    const result = await this._collection.countAllSQL();
+    return result;
+  }
+
   insert(item, callback = () => {}) {
     let id;
 
     if ('_id' in item) {
       if (!item._id || typeof item._id != 'string') {
         return callback(
-          'Meteor requires document _id fields to be non-empty strings'
+          'Meteor requires document _id fields to be non-empty strings',
         );
       }
       id = item._id;
@@ -202,7 +260,7 @@ export class Collection {
 
     if (!this.localCollection) {
       Data.waitDdpConnected(() => {
-        call(`/${this._name}/insert`, item, (err) => {
+        call(`/${this._name}/insert`, item, err => {
           if (err) {
             this._collection.del(id);
             return callback(err);
@@ -214,7 +272,7 @@ export class Collection {
     }
     // Notify relevant observers that the item has been updated with its new value
     let observers = getObservers('added', this._collection.name, item);
-    observers.forEach((callback) => {
+    observers.forEach(callback => {
       try {
         callback(item, undefined);
       } catch (e) {
@@ -241,7 +299,7 @@ export class Collection {
 
     if (!this.localCollection || (options && options.localOnly)) {
       Data.waitDdpConnected(() => {
-        call(`/${this._name}/update`, { _id: id }, modifier, (err) => {
+        call(`/${this._name}/update`, { _id: id }, modifier, err => {
           if (err) {
             // todo in such case the _collection's document should be reverted
             // unless we remove the auto-update to the server anyways
@@ -255,7 +313,7 @@ export class Collection {
     let newItem = this._collection.findOne({ _id: id });
     // Notify relevant observers that the item has been updated with its new value
     let observers = getObservers('changed', this._collection.name, newItem);
-    observers.forEach((callback) => {
+    observers.forEach(callback => {
       try {
         callback(newItem, old);
       } catch (e) {
@@ -264,36 +322,68 @@ export class Collection {
     });
   }
 
-  remove(id, callback = () => {}) {
-    const element = this.findOne(id);
-
-    if (element) {
-      this._collection.del(element._id);
-
-      if (!this.localCollection) {
-        Data.waitDdpConnected(() => {
-          call(`/${this._name}/remove`, { _id: id }, (err, res) => {
-            if (err) {
-              this._collection.upsert(element);
-              return callback(err);
-            }
-            callback(null, res);
-          });
-        });
-      }
-
-      // Load the observers for removing the element
-      let observers = getObservers('removed', this._collection.name, element);
-      observers.forEach((callback) => {
-        try {
-          callback(element);
-        } catch (e) {
-          console.error('Error in observe callback', e);
-        }
-      });
+  remove(id, callback = () => {}, store) {
+    if (this._collection.useSQL) {
+      const delaction = this._collection.del(id, store);
+      return delaction;
     } else {
-      callback(`No document with _id : ${id}`);
+      const element = this.findOne(id);
+
+      if (element) {
+        if (!this.localCollection) {
+          Data.waitDdpConnected(() => {
+            call(`/${this._name}/remove`, { _id: id }, (err, res) => {
+              if (err) {
+                this._collection.upsert(element);
+                return callback(err);
+              }
+              callback(null, res);
+            });
+          });
+
+          // Load the observers for removing the element
+          let observers = getObservers(
+            'removed',
+            this._collection.name,
+            element,
+          );
+          observers.forEach(callback => {
+            try {
+              callback(element);
+            } catch (e) {
+              console.error('Error in observe callback', e);
+            }
+          });
+        }
+      } else {
+        callback(`No document with _id : ${id}`);
+      }
     }
+  }
+
+  handleDeletions(deletions, store) {
+    deletions.forEach(deletion => {
+      switch (deletion.type) {
+        case 'microapprow': {
+          if (store) this._collection.del(deletion.id, store);
+          break;
+        }
+        case 'microapp': {
+          this._collection.delByParentID(
+            deletion.resourceID,
+            deletion.submitted,
+            store,
+          );
+          break;
+        }
+        default:
+        // do nothing - should not get a different type!
+      }
+    });
+  }
+
+  upsert(item, store) {
+    return this._collection.upsert(item, store);
   }
 
   helpers(helpers) {

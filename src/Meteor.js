@@ -15,6 +15,8 @@ import ReactiveDict from './ReactiveDict';
 
 let isVerbose = false;
 
+let meteorStore = null;
+
 const Meteor = {
   isVerbose,
   enableVerbose() {
@@ -27,8 +29,8 @@ const Meteor = {
   EJSON,
   ReactiveDict,
   Collection,
-  collection() {
-    throw new Error('Meteor.collection is deprecated. Use Mongo.Collection');
+  collection(name, options) {
+    return new Collection(name, options);
   },
   withTracker,
   useTracker,
@@ -77,6 +79,7 @@ const Meteor = {
     };
   },
   connect(endpoint, options) {
+    meteorStore = options?.store || meteorStore;
     if (!endpoint) endpoint = Data._endpoint;
     if (!options) options = Data._options;
 
@@ -128,15 +131,17 @@ const Meteor = {
     }
 
     Data.ddp.on('connected', () => {
+      // Clearing the collections has been causing items to momentarily not exist in components causing undefined errors.
+      // Just don't clear it - Arian
       // Clear the collections of any stale data in case this is a reconnect
-      if (Data.db && Data.db.collections) {
-        for (var collection in Data.db.collections) {
-          if (!localCollections.includes(collection)) {
-            // Dont clear data from local collections
-            Data.db[collection].remove({});
-          }
-        }
-      }
+      // if (Data.db && Data.db.collections) {
+      //   for (var collection in Data.db.collections) {
+      //     if (!localCollections.includes(collection)) {
+      //       // Dont clear data from local collections
+      //       Data.db[collection].remove({});
+      //     }
+      //   }
+      // }
 
       if (isVerbose) {
         console.info('Connected to DDP server.');
@@ -170,17 +175,20 @@ const Meteor = {
     });
 
     Data.ddp.on('added', (message) => {
+      let messageID = message.id;
+      messageID =
+        messageID.charAt(0) === '-' ? messageID.substring(1) : messageID;
       if (!Data.db[message.collection]) {
         Data.db.addCollection(message.collection);
       }
       const document = {
-        _id: message.id,
+        _id: messageID,
         ...message.fields,
       };
 
-      Data.db[message.collection].upsert(document);
+      Data.db[message.collection].upsert(document, meteorStore);
       let observers = getObservers('added', message.collection, document);
-      observers.forEach((callback) => {
+      observers.forEach(callback => {
         try {
           callback(document, null);
         } catch (e) {
@@ -199,35 +207,42 @@ const Meteor = {
         const subId = idsMap.get(message.subs[i]);
         if (subId) {
           const sub = Data.subscriptions[subId];
-          sub.ready = true;
-          sub.readyDeps.changed();
-          sub.readyCallback && sub.readyCallback();
+          if (sub) {
+            sub.ready = true;
+            typeof sub?.readyDeps?.changed === 'function' &&
+              sub.readyDeps.changed();
+            sub.readyCallback && sub.readyCallback();
+          }
         }
       }
     });
 
     Data.ddp.on('changed', (message) => {
+      let messageID = message.id;
+      messageID =
+        messageID.charAt(0) === '-' ? messageID.substring(1) : messageID;
+
       const unset = {};
       if (message.cleared) {
-        message.cleared.forEach((field) => {
+        message.cleared.forEach(field => {
           unset[field] = null;
         });
       }
 
       if (Data.db[message.collection]) {
         const document = {
-          _id: message.id,
+          _id: messageID,
           ...message.fields,
           ...unset,
         };
 
         const oldDocument = Data.db[message.collection].findOne({
-          _id: message.id,
+          _id: messageID,
         });
 
-        Data.db[message.collection].upsert(document);
+        Data.db[message.collection].upsert(document, meteorStore);
         let observers = getObservers('changed', message.collection, document);
-        observers.forEach((callback) => {
+        observers.forEach(callback => {
           try {
             callback(document, oldDocument);
           } catch (e) {
@@ -237,18 +252,22 @@ const Meteor = {
       }
     });
 
-    Data.ddp.on('removed', (message) => {
+    Data.ddp.on('removed', message => {
+      let messageID = message.id;
+      messageID =
+        messageID.charAt(0) === '-' ? messageID.substring(1) : messageID;
+
       if (Data.db[message.collection]) {
         const oldDocument = Data.db[message.collection].findOne({
-          _id: message.id,
+          _id: messageID,
         });
         let observers = getObservers(
           'removed',
           message.collection,
-          oldDocument
+          oldDocument,
         );
-        Data.db[message.collection].del(message.id);
-        observers.forEach((callback) => {
+        Data.db[message.collection].del(messageID);
+        observers.forEach(callback => {
           try {
             callback(null, oldDocument);
           } catch (e) {
@@ -257,28 +276,37 @@ const Meteor = {
         });
       }
     });
-    Data.ddp.on('result', (message) => {
-      const call = Data.calls.find((call) => call.id == message.id);
+    Data.ddp.on('result', message => {
+      let messageID = message.id;
+      messageID =
+        messageID.charAt(0) === '-' ? messageID.substring(1) : messageID;
+
+      const call = Data.calls.find(call => call.id == messageID);
       if (typeof call.callback == 'function')
         call.callback(message.error, message.result);
       Data.calls.splice(
-        Data.calls.findIndex((call) => call.id == message.id),
-        1
+        Data.calls.findIndex(call => call.id == messageID),
+        1,
       );
     });
 
-    Data.ddp.on('nosub', (message) => {
-      if (this.removing[message.id]) {
-        delete this.removing[message.id];
+    Data.ddp.on('nosub', message => {
+      let messageID = message.id;
+      messageID =
+        messageID.charAt(0) === '-' ? messageID.substring(1) : messageID;
+
+      if (this.removing[messageID]) {
+        delete this.removing[messageID];
       }
       for (var i in Data.subscriptions) {
         const sub = Data.subscriptions[i];
-        if (sub.subIdRemember == message.id) {
+        if (sub.subIdRemember == messageID) {
           console.warn('No subscription existing for', sub.name);
         }
       }
     });
-    Data.ddp.on('error', (message) => {
+
+    Data.ddp.on('error', message => {
       console.warn(message);
     });
   },
@@ -378,8 +406,13 @@ const Meteor = {
         if (!Data.subscriptions[id]) return false;
 
         let record = Data.subscriptions[id];
-        record.readyDeps.depend();
-        return record.ready;
+        if (typeof record?.readyDeps?.depend === 'function') {
+          record.readyDeps.depend();
+          return record.ready;
+        } else {
+          Data.subscriptions[id].readyDeps = new Tracker.Dependency();
+          return record.ready;
+        }
       },
       subscriptionId: id,
     };
