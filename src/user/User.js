@@ -152,7 +152,7 @@ const User = {
   _timeout: 50,
   _isTokenLogin: false,
   _isCallingLogin: false,
-  _loginWithToken(value) {
+  _loginWithToken(value, callback) {
     Data._tokenIdSaved = value;
     if (value !== null) {
       this._isTokenLogin = true;
@@ -179,6 +179,7 @@ const User = {
           }, time + 100);
         } else {
           User._handleLoginCallback(err, result);
+          typeof callback === 'function' && callback(err);
         }
       });
     } else {
