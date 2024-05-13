@@ -218,6 +218,7 @@ const User = {
           User.logout();
         } else {
           User._handleLoginCallback(err, result);
+          typeof callback === 'function' && callback(err);
         }
       });
     } else {
