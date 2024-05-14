@@ -257,7 +257,7 @@ const Meteor = {
       messageID =
         messageID.charAt(0) === '-' ? messageID.substring(1) : messageID;
 
-      if (Data.db[message.collection]) {
+      if (Data.db[message.collection] && !Data.db[message.collection].useSQL) {
         const oldDocument = Data.db[message.collection].findOne({
           _id: messageID,
         });
