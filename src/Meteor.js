@@ -266,7 +266,7 @@ const Meteor = {
           message.collection,
           oldDocument,
         );
-        Data.db[message.collection].del(messageID);
+        Data.db[message.collection].del(messageID, meteorStore);
         observers.forEach(callback => {
           try {
             callback(null, oldDocument);
